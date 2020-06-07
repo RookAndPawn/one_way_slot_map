@@ -2,7 +2,7 @@
 
 # One-Way Slot Map
 
-This is an implementation of the slot map data struture similar to [SlotMap](https://github.com/orlp/slotmap) with fewer restrictions and the ability to embed data inside the key objects. The "one-way" moniker for this crate comes from an implementaiton detail that prevernt inserted values from being taken out againe unless they are replaced with another instance. Values that are inserted can be referenced, and written to, but ownership of the values remains with the map even after the value is "removed".
+This is an implementation of the slot map data structure similar to [SlotMap](https://github.com/orlp/slotmap) with fewer restrictions and the ability to embed data inside the key objects. The "one-way" moniker for this crate comes from an implementation detail that prevent inserted values from being taken out again unless they are replaced with another instance. Values that are inserted can be referenced, and written to, but ownership of the values remains with the map even after the value is "removed".
 
 The data structure uses fixed size chunks (like [SlotMap's DenseSlotMap](https://docs.rs/slotmap/0.4.0/slotmap/dense/struct.DenseSlotMap.html)), so lookups require 2 steps of indirection.
 
@@ -10,7 +10,7 @@ Example Usage:
 
 First create a Key Class with an embedded data type
 ```rust
-/// Define a simple key with an embedded uszie
+/// Define a simple key with an embedded usize
 define_key_type!(DemoKey<usize>);
 
 /// Or define a less-simple key with some derived traits
