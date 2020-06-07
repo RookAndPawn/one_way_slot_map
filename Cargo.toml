@@ -1,0 +1,15 @@
+[package]
+name = "one_way_slot_map"
+version = "0.1.0"
+authors = ["Kevin Guthrie <kevin.guthrie@gmail.com>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+description = "An implementation of SlotMap with minimal restrictions on Keys and Values"
+readme = "README.md"
+repository = "https://github.com/RookAndPawn/one_way_slot_map"
+
+[dependencies]
+array-macro = "1.0.5"
+
+[dev-dependencies]
+static_assertions = "1.1.0"
