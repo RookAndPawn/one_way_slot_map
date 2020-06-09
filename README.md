@@ -23,12 +23,11 @@ Then create a slot map and use the key for crud operations
 let mut slot_map = SlotMap::new();
 
 let key: DemoKey = slot_map.insert(0, "Demo!");
-
 assert_eq!(Some(&"Demo!"), slot_map.get(&key));
 
 let slot = slot_map.get_mut(&key).unwrap();
-
 *slot = "Updated!";
 
 assert_eq!(Some(&mut "Updated!"), slot_map.remove(&key));
+assert_eq!(None, slot_map.get(&key));
 ```

@@ -14,14 +14,24 @@ const GENERATION_SHIFT: u8 = CHUNK_INDEX_SHIFT + CHUNK_INDEX_BITS;
 const GENERATION_MASK: u64 =
     ((0x1 << (GENERATION_BITS + 1)) - 1) << GENERATION_SHIFT;
 
+/// Encapsulation of all the information that defines a slot in the slot map.
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Default)]
 pub struct SlotMapKeyData {
+    /// Index of this slot in the chunk containing it
     pub index_in_chunk: usize,
+
+    /// Index of the chunk containing this slot
     pub chunk_index: usize,
+
+    /// Indication of the number of times this slot has been written.  This is
+    /// the core of what makes a slot map such a useful tool. If we want to
+    /// remove a value from the map, we don't have to deallocate its memory, we
+    /// can just increment its generation
     pub generation: usize,
 }
 
 impl SlotMapKeyData {
+    /// Create a new instance of slot map key data directly from its parts
     pub fn new(
         index_in_chunk: usize,
         chunk_index: usize,

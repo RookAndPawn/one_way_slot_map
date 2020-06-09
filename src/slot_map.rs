@@ -27,6 +27,16 @@ where
     phantom_p: PhantomData<P>,
 }
 
+impl<K, P, T> std::fmt::Debug for SlotMap<K, P, T>
+where
+    T: std::fmt::Debug,
+    K: SlotMapKey<P>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 impl<K, P, T> SlotMap<K, P, T>
 where
     K: SlotMapKey<P>,
@@ -47,6 +57,7 @@ where
         }
     }
 
+    /// Get the number of items in the slot map
     pub fn len(&self) -> usize {
         (self.storage.len() + 1) * SLOT_MAP_CHUNK_SIZE
             - self.queue.len()
@@ -62,7 +73,7 @@ where
                 slot.replace((slot_key.generation, value));
             } else {
                 panic!(
-                    "Invalid index {:?} in chucnk {} ",
+                    "Invalid index {:?} in chunk {} ",
                     slot_key.index_in_chunk, slot_key.chunk_index
                 );
             }
@@ -167,7 +178,7 @@ where
     pub fn get(&self, key: &K) -> Option<&T> {
         let key_data = key.get_slot_map_key_data();
 
-        // This allows us to unwrap instead of matching and panicing
+        // This allows us to unwrap instead of matching and panicking
         self.validate_slot_key(key);
 
         let (generation, value) =
@@ -196,7 +207,7 @@ where
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
-        // This allows us to unwrap instead of matching and panicing
+        // This allows us to unwrap instead of matching and panicking
         self.validate_slot_key(key);
 
         let (generation, value) =
@@ -224,7 +235,7 @@ where
     pub fn remove(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
-        // This allows us to unwrap instead of matching and panicing
+        // This allows us to unwrap instead of matching and panicking
         self.validate_slot_key(key);
 
         let (generation, value) =
@@ -249,6 +260,80 @@ where
         } else {
             None
         }
+    }
+
+    /// Clears all the values in the slot map
+    pub fn clear(&mut self) {
+        self.storage
+            .iter_mut()
+            .flat_map(|chunk| chunk.iter_mut())
+            .for_each(|(gen, _)| *gen += 1);
+
+        self.current_chunk.iter_mut().for_each(|slot| *slot = None);
+    }
+
+    /// Construct an iterator over all the values in the slot map
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a T> {
+        let full_chunks_iter =
+            self.storage.iter().flat_map(|slc| slc.iter()).filter_map(
+                |(gen, val)| {
+                    if gen % 2 == 1 {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter()
+            .filter_map(Option::as_ref)
+            .filter_map(
+                |(gen, val)| {
+                    if gen % 2 == 1 {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        full_chunks_iter.chain(current_chunk_iter)
+    }
+
+    /// Construct an iterator over all the values in the slot map as mutable
+    /// references
+    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut T> {
+        let full_chunks_iter = self
+            .storage
+            .iter_mut()
+            .flat_map(|slc| slc.iter_mut())
+            .filter_map(
+                |(gen, val)| {
+                    if *gen % 2 == 1 {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .filter_map(
+                |(gen, val)| {
+                    if *gen % 2 == 1 {
+                        Some(val)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        full_chunks_iter.chain(current_chunk_iter)
     }
 }
 
