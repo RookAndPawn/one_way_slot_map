@@ -58,6 +58,17 @@ where
     }
 
     /// Get the number of items in the slot map
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// # define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),usize>::new();
+    ///
+    /// let _ = map.insert((),10);
+    /// let _ = map.insert((),42);
+    ///
+    /// assert_eq!(2, map.len());
+    /// ```
     pub fn len(&self) -> usize {
         (self.storage.len() + 1) * SLOT_MAP_CHUNK_SIZE
             - self.queue.len()
@@ -262,14 +273,47 @@ where
         }
     }
 
-    /// Clears all the values in the slot map
+    /// Clears all the values in the slot map.  This can be a memory intensive
+    /// operation because we will have to write information for every non-empty
+    /// slot into the queue of slots that can now be used
     pub fn clear(&mut self) {
-        self.storage
-            .iter_mut()
-            .flat_map(|chunk| chunk.iter_mut())
-            .for_each(|(gen, _)| *gen += 1);
+        let current_chunk_index = self.current_chunk_index;
 
-        self.current_chunk.iter_mut().for_each(|slot| *slot = None);
+        // Create an iterator of all the full slots and their generation
+        let full_chunk_key_iter = self.storage.iter_mut().enumerate().flat_map(
+            |(chunk_idx, chunk)| {
+                chunk.iter_mut().enumerate().map(
+                    move |(idx_in_cnk, (gen, _))| (chunk_idx, idx_in_cnk, gen),
+                )
+            },
+        );
+
+        // Create an iterator of all the slots in the current chunk that have
+        // been written to and their generation
+        let curr_chunk_key_iter = self
+            .current_chunk
+            .iter_mut()
+            .enumerate()
+            .map(|(idx_in_cnk, slot_opt)| {
+                slot_opt
+                    .as_mut()
+                    .map(|(gen, _)| (current_chunk_index, idx_in_cnk, gen))
+            })
+            .filter_map(|v| v);
+
+        let return_queue = &mut self.queue;
+
+        // iterate over bother the full and working chunks, and empty the filled
+        // slots (by incrementing their generation) and adding them to the queue
+        // of slots that can be written to
+        full_chunk_key_iter
+            .chain(curr_chunk_key_iter)
+            .filter(|(_, _, gen)| (**gen % 2) == 0)
+            .map(|(chunk_idx, idx_in_chunk, gen)| {
+                *gen += 1;
+                SlotMapKeyData::new(chunk_idx, idx_in_chunk, *gen)
+            })
+            .for_each(|key| return_queue.push_back(key));
     }
 
     /// Construct an iterator over all the values in the slot map
@@ -277,7 +321,7 @@ where
         let full_chunks_iter =
             self.storage.iter().flat_map(|slc| slc.iter()).filter_map(
                 |(gen, val)| {
-                    if gen % 2 == 1 {
+                    if gen % 2 == 0 {
                         Some(val)
                     } else {
                         None
@@ -291,7 +335,7 @@ where
             .filter_map(Option::as_ref)
             .filter_map(
                 |(gen, val)| {
-                    if gen % 2 == 1 {
+                    if gen % 2 == 0 {
                         Some(val)
                     } else {
                         None
@@ -311,7 +355,7 @@ where
             .flat_map(|slc| slc.iter_mut())
             .filter_map(
                 |(gen, val)| {
-                    if *gen % 2 == 1 {
+                    if *gen % 2 == 0 {
                         Some(val)
                     } else {
                         None
@@ -325,7 +369,7 @@ where
             .filter_map(Option::as_mut)
             .filter_map(
                 |(gen, val)| {
-                    if *gen % 2 == 1 {
+                    if *gen % 2 == 0 {
                         Some(val)
                     } else {
                         None
@@ -366,7 +410,7 @@ mod test {
     fn test_crud() {
         let mut map = create_test_map();
 
-        let insertions = SLOT_MAP_CHUNK_SIZE * 10;
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
 
         let mut keys = Vec::new();
 
@@ -387,5 +431,78 @@ mod test {
 
         assert_eq!(map.len(), 0);
         assert_eq!(map.queue.len(), insertions);
+    }
+
+    #[test]
+    fn test_iter() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+
+        let mut keys = Vec::new();
+
+        for i in 0..insertions {
+            keys.push(map.insert(i, format!("{}", i)));
+        }
+
+        let mut counter = 0usize;
+
+        for v in map.iter() {
+            assert_eq!(&format!("{}", counter), v);
+            counter += 1;
+        }
+
+        assert_eq!(insertions, counter);
+    }
+    #[test]
+    fn test_iter_mut() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+
+        let mut keys = Vec::new();
+
+        for i in 0..insertions {
+            keys.push(map.insert(i, format!("{}", i)));
+        }
+
+        let mut counter = 0usize;
+
+        for v in map.iter_mut() {
+            *v = format!("{}", (counter * 2) + 1);
+            counter += 1;
+        }
+
+        for k in keys.iter() {
+            assert_eq!(map.get(k), Some(&format!("{}", (k.0 * 2) + 1)));
+        }
+
+        assert_eq!(insertions, counter);
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+
+        let mut keys = Vec::new();
+
+        for i in 0..insertions {
+            keys.push(map.insert(i, format!("{}", i)));
+        }
+
+        assert_eq!(map.len(), insertions);
+
+        map.clear();
+
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.queue.len(), insertions);
+
+        assert_eq!(map.iter().count(), 0);
+
+        for k in keys.iter() {
+            assert_eq!(map.get(k), None);
+        }
     }
 }
