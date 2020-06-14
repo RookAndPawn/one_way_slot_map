@@ -15,7 +15,7 @@ const GENERATION_MASK: u64 =
     ((0x1 << (GENERATION_BITS + 1)) - 1) << GENERATION_SHIFT;
 
 /// Encapsulation of all the information that defines a slot in the slot map.
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Default, Eq)]
 pub struct SlotMapKeyData {
     /// Index of this slot in the chunk containing it
     pub index_in_chunk: usize,
@@ -54,7 +54,7 @@ impl From<u64> for SlotMapKeyData {
     fn from(input: u64) -> SlotMapKeyData {
         SlotMapKeyData {
             index_in_chunk: (input & INDEX_IN_CHUNK_MASK) as usize,
-            chunk_index: ((input & CHUNK_INDEX_MASK) >> CHUNK_INDEX_MASK)
+            chunk_index: ((input & CHUNK_INDEX_MASK) >> CHUNK_INDEX_BITS)
                 as usize,
             generation: ((input * GENERATION_MASK) >> GENERATION_SHIFT)
                 as usize,

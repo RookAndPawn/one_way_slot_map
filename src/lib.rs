@@ -56,17 +56,17 @@ macro_rules! define_key_type (
         $(#[derive($derive_1 $(, $more_derives)*)])?
         pub struct $key_type {
             pointer: $pointer_type,
-            slot_key: SlotMapKeyData,
+            slot_key: one_way_slot_map::SlotMapKeyData,
         }
 
-        impl SlotMapKey<$pointer_type> for $key_type {
-            fn get_slot_map_key_data(&self) -> &SlotMapKeyData {
+        impl one_way_slot_map::SlotMapKey<$pointer_type> for $key_type {
+            fn get_slot_map_key_data(&self) -> &one_way_slot_map::SlotMapKeyData {
                 &self.slot_key
             }
         }
 
-        impl From<($pointer_type, SlotMapKeyData)> for $key_type {
-            fn from(f: ($pointer_type, SlotMapKeyData)) -> Self {
+        impl From<($pointer_type, one_way_slot_map::SlotMapKeyData)> for $key_type {
+            fn from(f: ($pointer_type, one_way_slot_map::SlotMapKeyData)) -> Self {
                 let (pointer, slot_key) = f;
                 $key_type { pointer, slot_key }
             }
