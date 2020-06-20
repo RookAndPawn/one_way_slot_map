@@ -217,7 +217,7 @@ fn deletion_benchmark(c: &mut Criterion) {
     c.bench_function("slotmap deleting 1M", |b| {
         b.iter_custom(|_| {
             let mut keys: Vec<DefaultKey> = Vec::new();
-            let mut map : SlotMap<DefaultKey, usize> = SlotMap::new();
+            let mut map: SlotMap<DefaultKey, usize> = SlotMap::new();
 
             for i in 0..1_000_000 {
                 keys.push(map.insert(i));
@@ -229,10 +229,7 @@ fn deletion_benchmark(c: &mut Criterion) {
 
             let start = std::time::Instant::now();
 
-            delete_many_slotmap(
-                black_box(&mut map),
-                black_box(&keys),
-            );
+            delete_many_slotmap(black_box(&mut map), black_box(&keys));
 
             start.elapsed()
         })
@@ -251,5 +248,10 @@ fn deletion_benchmark(c: &mut Criterion) {
     // });
 }
 
-criterion_group!(benches, deletion_benchmark, insertion_benchmark, read_benchmark, );
+criterion_group!(
+    benches,
+    deletion_benchmark,
+    insertion_benchmark,
+    read_benchmark,
+);
 criterion_main!(benches);
