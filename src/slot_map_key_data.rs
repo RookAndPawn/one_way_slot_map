@@ -6,16 +6,16 @@ const INDEX_IN_CHUNK_BITS: u8 = SLOT_MAP_CHUNK_SIZE.trailing_zeros() as u8;
 const CHUNK_INDEX_BITS: u8 = 32;
 const GENERATION_BITS: u8 = 64 - CHUNK_INDEX_BITS - INDEX_IN_CHUNK_BITS;
 
-const INDEX_IN_CHUNK_MASK: u64 = (0x1 << (INDEX_IN_CHUNK_BITS + 1)) - 1;
+const INDEX_IN_CHUNK_MASK: u64 = (0x1 << INDEX_IN_CHUNK_BITS) - 1;
 const CHUNK_INDEX_SHIFT: u8 = INDEX_IN_CHUNK_BITS;
 const CHUNK_INDEX_MASK: u64 =
-    ((0x1 << (CHUNK_INDEX_BITS + 1)) - 1) << CHUNK_INDEX_SHIFT;
+    ((0x1 << CHUNK_INDEX_BITS) - 1) << CHUNK_INDEX_SHIFT;
 const GENERATION_SHIFT: u8 = CHUNK_INDEX_SHIFT + CHUNK_INDEX_BITS;
 const GENERATION_MASK: u64 =
-    ((0x1 << (GENERATION_BITS + 1)) - 1) << GENERATION_SHIFT;
+    ((0x1 << GENERATION_BITS) - 1) << GENERATION_SHIFT;
 
 const MAX_INDEX_IN_CHUNK: u16 = INDEX_IN_CHUNK_MASK as u16;
-const MAX_GENERATION: u32 = GENERATION_MASK as u32;
+const MAX_GENERATION: u32 = (0x1 << GENERATION_BITS) - 1 as u32;
 
 /// Encapsulation of all the information that defines a slot in the slot map.
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Default, Eq)]
@@ -34,28 +34,11 @@ pub struct SlotMapKeyData {
 }
 
 impl SlotMapKeyData {
-    /// Create a new instance of slot map key data directly from its parts
-    pub(crate) fn new(
-        index_in_chunk: u16,
-        chunk_index: u32,
-        generation: u32,
-    ) -> SlotMapKeyData {
-        assert!(
-            index_in_chunk <= MAX_INDEX_IN_CHUNK,
-            "Invalid Index in chunk"
-        );
-        assert!(generation <= MAX_GENERATION, "Invalid Generation");
-
-        SlotMapKeyData {
-            index_in_chunk,
-            chunk_index,
-            generation,
-        }
-    }
 
     /// Increase the generation by one, and wraps when the generation
     /// passes the max.
     pub(crate) fn increment_generation(&mut self) {
+
         if self.generation < MAX_GENERATION {
             self.generation += 1;
         } else if self.generation == MAX_GENERATION {

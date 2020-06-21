@@ -32,7 +32,7 @@ impl<T> Slots<T> {
     }
 
     fn get_slot(&self, key: &SlotMapKeyData) -> Option<&(SlotMapKeyData, T)> {
-        if key.chunk_index <= self.filled_chunks.len() as u32 {
+        if key.chunk_index < self.current_chunk_index {
             self.filled_chunks
                 .get(key.chunk_index as usize)
                 .unwrap()
@@ -87,6 +87,51 @@ impl<T> Slots<T> {
             None
         }
     }
+
+    /// Move the current chunk into filled chunks
+    fn move_current_chunk_to_filled_chunk(&mut self) {
+        let storage_chunk = Box::new(array_macro::array![|i| {
+                self.current_chunk
+                    .get_mut(i)
+                    .expect("Expected correctly sized chunk")
+                    .take()
+                    .expect("Expected all slots in current chunk to be filled")
+            } ; SLOT_MAP_CHUNK_SIZE]);
+
+        self.filled_chunks.push(storage_chunk);
+        self.current_chunk_index = self.filled_chunks.len() as u32;
+        self.current_chunk_cursor = 0;
+    }
+
+    /// Construct an iterator over all initialized slots
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a (SlotMapKeyData, T)> {
+        let full_chunks_iter =
+            self.filled_chunks.iter().flat_map(|slc| slc.iter());
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter()
+            .take(self.current_chunk_cursor as usize)
+            .filter_map(Option::as_ref);
+
+        full_chunks_iter.chain(current_chunk_iter)
+    }
+
+    /// Construct an iterator over all initialized slots as mutable references
+    pub fn iter_mut<'a>(
+        &'a mut self,
+    ) -> impl Iterator<Item = &'a mut (SlotMapKeyData, T)> {
+        let full_chunks_iter =
+            self.filled_chunks.iter_mut().flat_map(|slc| slc.iter_mut());
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter_mut()
+            .take(self.current_chunk_cursor as usize)
+            .filter_map(Option::as_mut);
+
+        full_chunks_iter.chain(current_chunk_iter)
+    }
 }
 
 /// Implementation of a slot map that limits the restrictions on slotted keys
@@ -104,15 +149,15 @@ where
     phantom_p: PhantomData<P>,
 }
 
-// impl<K, P, T> std::fmt::Debug for SlotMap<K, P, T>
-// where
-//     T: std::fmt::Debug,
-//     K: SlotMapKey<P>,
-// {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_list().entries(self.iter()).finish()
-//     }
-// }
+impl<K, P, T> std::fmt::Debug for SlotMap<K, P, T>
+where
+    T: std::fmt::Debug,
+    K: SlotMapKey<P>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
 
 impl<K, P, T> SlotMap<K, P, T>
 where
@@ -121,6 +166,7 @@ where
     /// Create a new default simple slot map
     pub fn new() -> SlotMap<K, P, T> {
         SlotMap {
+            slots: Slots::new(),
             next_open_slot: Default::default(),
             len: Default::default(),
 
@@ -145,29 +191,15 @@ where
         self.len
     }
 
-    /// Move the current chunk into storage
-    fn move_current_chunk_to_storage(&mut self) {
-        let storage_chunk = Box::new(array_macro::array![|i| {
-                self.current_chunk
-                    .get_mut(i)
-                    .expect("Expected correctly sized chunk")
-                    .take()
-                    .expect("Expected all slots in current chunk to be filled")
-            } ; SLOT_MAP_CHUNK_SIZE]);
-
-        self.storage.push(storage_chunk);
-        self.current_chunk_index = self.storage.len() as u32;
-        self.current_chunk_cursor = 0;
-    }
-
     /// insert the given item into the slot map and return its key
     pub fn insert(&mut self, pointer: P, value: T) -> K {
         let next_slot = &mut self.next_open_slot;
 
-        let key_data = if next_slot.chunk_index < self.current_chunk_index
-            || next_slot.index_in_chunk < self.current_chunk_cursor
+        let key_data = if next_slot.chunk_index < self.slots.current_chunk_index
+            || next_slot.index_in_chunk < self.slots.current_chunk_cursor
         {
             let (new_next_slot, old_val) = self
+                .slots
                 .get_storage_slot_mut(next_slot)
                 .expect("invalid next slot pointer");
             *old_val = value;
@@ -176,13 +208,18 @@ where
             *new_next_slot
         } else {
             let key_data = *next_slot;
-            let slot_opt = self.get_current_chunk_slot_mut(next_slot);
+            let slot_opt = self.slots.get_current_chunk_slot_mut(next_slot);
             *slot_opt = Some((*next_slot, value));
             if self.next_open_slot.increment_coordinates() {
-                self.move_current_chunk_to_storage()
+                self.slots.move_current_chunk_to_filled_chunk()
+            }
+            else {
+                self.slots.current_chunk_cursor += 1;
             }
             key_data
         };
+
+        self.len += 1;
 
         K::from((pointer, key_data))
     }
@@ -191,7 +228,8 @@ where
     pub fn get(&self, key: &K) -> Option<&T> {
         let key_data = key.get_slot_map_key_data();
 
-        self.get_slot(key_data)
+        self.slots
+            .get_slot(key_data)
             .filter(|slot| slot.0.is_filled())
             .filter(|slot| slot.0.generation == key_data.generation)
             .map(|slot| &slot.1)
@@ -201,7 +239,8 @@ where
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
-        self.get_existing_slot_mut(key_data)
+        self.slots
+            .get_existing_slot_mut(key_data)
             .filter(|slot| slot.0.is_filled())
             .filter(|slot| slot.0.generation == key_data.generation)
             .map(|slot| &mut slot.1)
@@ -211,122 +250,52 @@ where
     pub fn remove(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
-        self.get_existing_slot_mut(key_data)
-            .filter(|slot| slot.0.is_filled())
-            .filter(|slot| slot.0.generation == key_data.generation)
-            .map(|(key, value)| {
+        if let Some((key, value)) = self
+            .slots
+            .get_existing_slot_mut(key_data)
+            .filter(|(key, _)| key.is_filled())
+            .filter(|(key, _)| key.generation == key_data.generation)
+        {
+            self.len -= 1;
+            key.increment_generation();
+            key.swap_coordinates(&mut self.next_open_slot);
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    /// Clears all the values in the slot map.  This can be a memory intensive
+    /// operation because we will have to write information for every non-empty
+    /// slot into the queue of slots that can now be used
+    pub fn clear(&mut self) {
+        self.slots
+            .iter_mut()
+            .filter(|(key, _)| key.is_filled())
+            .for_each(|(key, _)| {
                 key.increment_generation();
-                key.swap_coordinates(&mut self.next_open_slot);
-                value
-            })
+            });
+
+        self.len = 0;
+    }
+
+    /// Create an iterator over all items in the items in the map
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a T> {
+        self.slots
+            .iter()
+            .filter(|(key, _)| key.is_filled())
+            .map(|(_, value)| value)
+    }
+
+    /// Construct an iterator over all the values in the slot map as mutable
+    /// references
+    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut T> {
+        self.slots
+            .iter_mut()
+            .filter(|(key, _)| key.is_filled())
+            .map(|(_, value)| value)
     }
 }
-/// Clears all the values in the slot map.  This can be a memory intensive
-/// operation because we will have to write information for every non-empty
-/// slot into the queue of slots that can now be used
-// pub fn clear(&mut self) {
-//     let current_chunk_index = self.current_chunk_index;
-
-//     // Create an iterator of all the full slots and their generation
-//     let full_chunk_key_iter = self.storage.iter_mut().enumerate().flat_map(
-//         |(chunk_idx, chunk)| {
-//             chunk.iter_mut().enumerate().map(
-//                 move |(idx_in_cnk, (gen, _))| (chunk_idx, idx_in_cnk, gen),
-//             )
-//         },
-//     );
-
-//     // Create an iterator of all the slots in the current chunk that have
-//     // been written to and their generation
-//     let curr_chunk_key_iter = self
-//         .current_chunk
-//         .iter_mut()
-//         .enumerate()
-//         .map(|(idx_in_cnk, slot_opt)| {
-//             slot_opt
-//                 .as_mut()
-//                 .map(|(gen, _)| (current_chunk_index, idx_in_cnk, gen))
-//         })
-//         .filter_map(|v| v);
-
-//     let return_queue = &mut self.queue;
-
-//     // iterate over bother the full and working chunks, and empty the filled
-//     // slots (by incrementing their generation) and adding them to the queue
-//     // of slots that can be written to
-//     full_chunk_key_iter
-//         .chain(curr_chunk_key_iter)
-//         .filter(|(_, _, gen)| (**gen % 2) == 0)
-//         .map(|(chunk_idx, idx_in_chunk, gen)| {
-//             *gen += 1;
-//             SlotMapKeyData::new(chunk_idx, idx_in_chunk, *gen)
-//         })
-//         .for_each(|key| return_queue.push_back(key));
-// }
-
-// /// Construct an iterator over all the values in the slot map
-// pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a T> {
-//     let full_chunks_iter =
-//         self.storage.iter().flat_map(|slc| slc.iter()).filter_map(
-//             |(gen, val)| {
-//                 if gen % 2 == 0 {
-//                     Some(val)
-//                 } else {
-//                     None
-//                 }
-//             },
-//         );
-
-//     let current_chunk_iter = self
-//         .current_chunk
-//         .iter()
-//         .filter_map(Option::as_ref)
-//         .filter_map(
-//             |(gen, val)| {
-//                 if gen % 2 == 0 {
-//                     Some(val)
-//                 } else {
-//                     None
-//                 }
-//             },
-//         );
-
-//     full_chunks_iter.chain(current_chunk_iter)
-// }
-
-// /// Construct an iterator over all the values in the slot map as mutable
-// /// references
-// pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut T> {
-//     let full_chunks_iter = self
-//         .storage
-//         .iter_mut()
-//         .flat_map(|slc| slc.iter_mut())
-//         .filter_map(
-//             |(gen, val)| {
-//                 if *gen % 2 == 0 {
-//                     Some(val)
-//                 } else {
-//                     None
-//                 }
-//             },
-//         );
-
-//     let current_chunk_iter = self
-//         .current_chunk
-//         .iter_mut()
-//         .filter_map(Option::as_mut)
-//         .filter_map(
-//             |(gen, val)| {
-//                 if *gen % 2 == 0 {
-//                     Some(val)
-//                 } else {
-//                     None
-//                 }
-//             },
-//         );
-
-//     full_chunks_iter.chain(current_chunk_iter)
-// }
 
 #[cfg(test)]
 mod test {
@@ -357,6 +326,32 @@ mod test {
     fn test_crud() {
         let mut map = create_test_map();
 
+        let mut key = map.insert(0, "0".to_owned());
+
+        assert_eq!(map.len(), 1);
+
+        assert_eq!(map.get(&key), Some(&"0".to_owned()));
+
+        {
+            let v = map.get_mut(&key).expect("Key should be present");
+            *v = "1".to_owned();
+        }
+
+        map.clear();
+        //assert_eq!(map.remove(&key), Some(&mut "1".to_owned()));
+        assert_eq!(map.get(&key), None);
+
+        assert_eq!(map.len(), 0);
+
+        map.iter().for_each(|v| {
+            dbg!(v);
+        });
+    }
+
+    #[test]
+    fn test_lots_of_crud() {
+        let mut map = create_test_map();
+
         let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
 
         let mut keys = Vec::new();
@@ -377,7 +372,6 @@ mod test {
         }
 
         assert_eq!(map.len(), 0);
-        assert_eq!(map.queue.len(), insertions);
     }
 
     #[test]
@@ -444,7 +438,6 @@ mod test {
         map.clear();
 
         assert_eq!(map.len(), 0);
-        assert_eq!(map.queue.len(), insertions);
 
         assert_eq!(map.iter().count(), 0);
 
