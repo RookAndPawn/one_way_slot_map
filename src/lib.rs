@@ -51,16 +51,16 @@ extern crate static_assertions;
 /// created from scratch, but for most cases, this will produce what you want
 #[macro_export]
 macro_rules! define_key_type (
-    ($key_type:ident<$pointer_type:ty> $(: $derive_1:ident $(+ $more_derives:ident)* )?) => {
+    ($visability:vis $key_type:ident<$pointer_type:ty> $(: $derive_1:ident $(+ $more_derives:ident)* )?) => {
 
         $(#[derive($derive_1 $(, $more_derives)*)])?
-        pub struct $key_type {
+        $visability struct $key_type {
             pub pointer: $pointer_type,
             slot_key: one_way_slot_map::SlotMapKeyData,
         }
 
-        impl one_way_slot_map::SlotMapKey<$pointer_type> for $key_type {
-            fn get_slot_map_key_data(&self) -> &one_way_slot_map::SlotMapKeyData {
+        impl std::borrow::Borrow<one_way_slot_map::SlotMapKeyData> for $key_type {
+            fn borrow(&self) -> &one_way_slot_map::SlotMapKeyData {
                 &self.slot_key
             }
         }
@@ -71,6 +71,8 @@ macro_rules! define_key_type (
                 $key_type { pointer, slot_key }
             }
         }
+
+        impl one_way_slot_map::SlotMapKey<$pointer_type> for $key_type {}
     };
 );
 

@@ -1,4 +1,5 @@
 use super::{SlotMapKey, SlotMapKeyData};
+use std::borrow::Borrow;
 use std::marker::PhantomData;
 
 /// Size of the individual array chunks in the slot map
@@ -148,14 +149,7 @@ where
         current_chunk
             .iter_mut()
             .zip(self.current_chunk.iter())
-            .for_each(|pair| match pair {
-                (Some(dst), Some(src)) => {
-                    *dst = src.clone();
-                }
-                _ => {
-                    unreachable!("Chunk lengths should be the same");
-                }
-            });
+            .for_each(|(dst, src)| *dst = src.clone());
 
         Slots {
             current_chunk,
@@ -254,12 +248,13 @@ where
     ///
     /// ```
     /// # use one_way_slot_map::*;
+    /// # use std::borrow::Borrow;
     /// define_key_type!(TestKey<String>);
     /// let mut map = SlotMap::<TestKey,String,usize>::new();
     ///
     /// let key = map.insert("My Key".to_owned(), 10);
     /// assert_eq!("My Key", key.pointer);
-    /// assert_eq!(&SlotMapKeyData::from(0), key.get_slot_map_key_data());
+    /// assert_eq!(&SlotMapKeyData::from(0), key.borrow());
     /// ```
     pub fn insert(&mut self, pointer: P, value: T) -> K {
         let next_slot = &mut self.next_open_slot;
@@ -311,7 +306,17 @@ where
     /// assert_eq!(None, map.get(&fake_key));
     /// ```
     pub fn get(&self, key: &K) -> Option<&T> {
-        let key_data = key.get_slot_map_key_data();
+        self.get_unbounded(key)
+    }
+
+    /// Same as get method, but doesn't restrict input key to the type bound
+    /// to this map. This method isn't unsafe; it just doesn't prevent you from
+    /// getting data with a key of the wrong type
+    pub fn get_unbounded(
+        &self,
+        key: &impl Borrow<SlotMapKeyData>,
+    ) -> Option<&T> {
+        let key_data = key.borrow();
 
         self.slots
             .get_slot(key_data)
@@ -344,7 +349,17 @@ where
     /// assert_eq!(None, map.get_mut(&fake_key));
     /// ```
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
-        let key_data = key.get_slot_map_key_data();
+        self.get_mut_unbounded(key)
+    }
+
+    /// Same as get_mut method, but doesn't restrict input key to the type bound
+    /// to this map. This method isn't unsafe; it just doesn't prevent you from
+    /// writing data with a key of the wrong type
+    pub fn get_mut_unbounded(
+        &mut self,
+        key: &impl Borrow<SlotMapKeyData>,
+    ) -> Option<&mut T> {
+        let key_data = key.borrow();
 
         self.slots
             .get_existing_slot_mut(key_data)
@@ -370,7 +385,17 @@ where
     /// assert_eq!(None, map.get(&key));
     /// ```
     pub fn remove(&mut self, key: &K) -> Option<&mut T> {
-        let key_data = key.get_slot_map_key_data();
+        self.remove_unbounded(key)
+    }
+
+    /// Same as remove method, but doesn't restrict input key to the type bound
+    /// to this map. This method isn't unsafe; it just doesn't prevent you from
+    /// writing data with a key of the wrong type
+    pub fn remove_unbounded(
+        &mut self,
+        key: &impl Borrow<SlotMapKeyData>,
+    ) -> Option<&mut T> {
+        let key_data = key.borrow();
 
         if let Some((key, value)) = self
             .slots
@@ -405,7 +430,17 @@ where
     /// assert!(!map.contains_key(&fake_key));
     /// ```
     pub fn contains_key(&self, key: &K) -> bool {
-        let key_data = key.get_slot_map_key_data();
+        self.contains_key_unbounded(key)
+    }
+
+    /// Same as contains_key method, but doesn't restrict input key to the type
+    /// bound to this map. This method isn't unsafe; it just doesn't prevent you
+    /// from getting data with a key of the wrong type
+    pub fn contains_key_unbounded(
+        &self,
+        key: &impl Borrow<SlotMapKeyData>,
+    ) -> bool {
+        let key_data = key.borrow();
 
         self.slots
             .get_slot(key_data)
@@ -520,8 +555,8 @@ mod test {
     #[derive(Debug, Hash, Clone, Copy)]
     struct TestKey(usize, SlotMapKeyData);
 
-    impl SlotMapKey<usize> for TestKey {
-        fn get_slot_map_key_data(&self) -> &SlotMapKeyData {
+    impl Borrow<SlotMapKeyData> for TestKey {
+        fn borrow(&self) -> &SlotMapKeyData {
             &self.1
         }
     }
@@ -532,6 +567,8 @@ mod test {
             TestKey(p, k)
         }
     }
+
+    impl SlotMapKey<usize> for TestKey {}
 
     fn create_test_map() -> SlotMap<TestKey, usize, String> {
         SlotMap::new()
@@ -736,5 +773,34 @@ mod test {
                 map.clear();
             }
         }
+    }
+
+    #[test]
+    fn test_clone() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+        let iterations = 50;
+
+        let mut keys = Vec::new();
+
+        for _ in 0..iterations {
+            keys.clear();
+
+            for i in 0..insertions {
+                keys.push(map.insert(i, format!("{}", i)));
+            }
+
+            map.clear();
+        }
+
+        let map2 = map.clone();
+
+        map.slots
+            .iter()
+            .zip(map2.slots.iter())
+            .for_each(|(left, right)| {
+                assert_eq!(left, right);
+            })
     }
 }
