@@ -14,6 +14,8 @@ mod sanity_checks {
 struct Slots<T> {
     // This will be replaced with Box<[MaybeUninit] when assumeInitRef is stable
     current_chunk: Box<[Option<(SlotMapKeyData, T)>; SLOT_MAP_CHUNK_SIZE]>,
+
+    #[allow(clippy::vec_box)]
     filled_chunks: Vec<Box<[(SlotMapKeyData, T); SLOT_MAP_CHUNK_SIZE]>>,
     current_chunk_index: u32,
     current_chunk_cursor: u16,
@@ -104,7 +106,7 @@ impl<T> Slots<T> {
     }
 
     /// Construct an iterator over all initialized slots
-    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a (SlotMapKeyData, T)> {
+    pub fn iter(&self) -> impl Iterator<Item = &(SlotMapKeyData, T)> {
         let full_chunks_iter =
             self.filled_chunks.iter().flat_map(|slc| slc.iter());
 
@@ -118,9 +120,9 @@ impl<T> Slots<T> {
     }
 
     /// Construct an iterator over all initialized slots as mutable references
-    pub fn iter_mut<'a>(
-        &'a mut self,
-    ) -> impl Iterator<Item = &'a mut (SlotMapKeyData, T)> {
+    pub fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut (SlotMapKeyData, T)> {
         let full_chunks_iter =
             self.filled_chunks.iter_mut().flat_map(|slc| slc.iter_mut());
 
@@ -131,6 +133,36 @@ impl<T> Slots<T> {
             .filter_map(Option::as_mut);
 
         full_chunks_iter.chain(current_chunk_iter)
+    }
+}
+
+impl<T> Clone for Slots<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        let mut current_chunk: Box<
+            [Option<(SlotMapKeyData, T)>; SLOT_MAP_CHUNK_SIZE],
+        > = Box::new(array_macro::array![None; SLOT_MAP_CHUNK_SIZE]);
+
+        current_chunk
+            .iter_mut()
+            .zip(self.current_chunk.iter())
+            .for_each(|pair| match pair {
+                (Some(dst), Some(src)) => {
+                    *dst = src.clone();
+                }
+                _ => {
+                    unreachable!("Chunk lengths should be the same");
+                }
+            });
+
+        Slots {
+            current_chunk,
+            filled_chunks: self.filled_chunks.clone(),
+            current_chunk_cursor: self.current_chunk_cursor,
+            current_chunk_index: self.current_chunk_index,
+        }
     }
 }
 
@@ -156,6 +188,15 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl<K, P, T> Default for SlotMap<K, P, T>
+where
+    K: SlotMapKey<P>,
+{
+    fn default() -> Self {
+        SlotMap::new()
     }
 }
 
@@ -191,7 +232,35 @@ where
         self.len
     }
 
+    /// Tells if this map is empty
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// # define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),usize>::new();
+    ///
+    /// assert_eq!(true, map.is_empty());
+    ///
+    /// let _ = map.insert((),10);
+    /// let _ = map.insert((),42);
+    ///
+    /// assert_eq!(false, map.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// insert the given item into the slot map and return its key
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<String>);
+    /// let mut map = SlotMap::<TestKey,String,usize>::new();
+    ///
+    /// let key = map.insert("My Key".to_owned(), 10);
+    /// assert_eq!("My Key", key.pointer);
+    /// assert_eq!(&SlotMapKeyData::from(0), key.get_slot_map_key_data());
+    /// ```
     pub fn insert(&mut self, pointer: P, value: T) -> K {
         let next_slot = &mut self.next_open_slot;
 
@@ -200,7 +269,7 @@ where
         {
             let (new_next_slot, old_val) = self
                 .slots
-                .get_storage_slot_mut(next_slot)
+                .get_existing_slot_mut(next_slot)
                 .expect("invalid next slot pointer");
             *old_val = value;
             new_next_slot.increment_generation();
@@ -212,8 +281,7 @@ where
             *slot_opt = Some((*next_slot, value));
             if self.next_open_slot.increment_coordinates() {
                 self.slots.move_current_chunk_to_filled_chunk()
-            }
-            else {
+            } else {
                 self.slots.current_chunk_cursor += 1;
             }
             key_data
@@ -224,7 +292,24 @@ where
         K::from((pointer, key_data))
     }
 
-    /// Get the value for the given key if there is one
+    /// Get a reference to the item in the map that corresponds to the given key
+    /// if it exists
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert_eq!(Some(&"Hello!"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = TestKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get(&fake_key));
+    /// ```
     pub fn get(&self, key: &K) -> Option<&T> {
         let key_data = key.get_slot_map_key_data();
 
@@ -235,7 +320,29 @@ where
             .map(|slot| &slot.1)
     }
 
-    /// Get the value for the given key if there is one
+    /// Get a mutable reference to the item in the map that corresponds to the
+    /// given key if it exists
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// {
+    ///     if let Some(item) = map.get_mut(&key) {
+    ///         *item = "World?";
+    ///     }
+    /// }
+    /// assert_eq!(Some(&"World?"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = TestKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get_mut(&fake_key));
+    /// ```
     pub fn get_mut(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
@@ -245,8 +352,23 @@ where
             .filter(|slot| slot.0.generation == key_data.generation)
             .map(|slot| &mut slot.1)
     }
+
     /// Remove the item at the given index and return a mutable ref to the
     /// item removed if there was one
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// # define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.get(&key).is_some());
+    ///
+    /// assert_eq!(Some(&mut "Hello!"), map.remove(&key));
+    ///
+    /// assert_eq!(None, map.get(&key));
+    /// ```
     pub fn remove(&mut self, key: &K) -> Option<&mut T> {
         let key_data = key.get_slot_map_key_data();
 
@@ -265,22 +387,65 @@ where
         }
     }
 
+    /// Check to see if the given key is still valid in this map
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.contains_key(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = TestKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert!(!map.contains_key(&fake_key));
+    /// ```
+    pub fn contains_key(&self, key: &K) -> bool {
+        let key_data = key.get_slot_map_key_data();
+
+        self.slots
+            .get_slot(key_data)
+            .filter(|(existing_key, _)| {
+                existing_key.generation == key_data.generation
+            })
+            .is_some()
+    }
+
+    /// Remove all items from this map and process them one-by-one
+    pub fn drain(&mut self) -> impl Iterator<Item = &mut T> {
+        let len = &mut self.len;
+        let next_open_slot = &mut self.next_open_slot;
+
+        Drain {
+            inner: self
+                .slots
+                .iter_mut()
+                .filter(|(key, _)| key.is_filled())
+                .map(move |(key, val)| {
+                    *len -= 1;
+
+                    key.increment_generation();
+                    next_open_slot.swap_coordinates(key);
+
+                    val
+                }),
+            phantom_t: Default::default(),
+        }
+    }
+
     /// Clears all the values in the slot map.  This can be a memory intensive
     /// operation because we will have to write information for every non-empty
     /// slot into the queue of slots that can now be used
     pub fn clear(&mut self) {
-        self.slots
-            .iter_mut()
-            .filter(|(key, _)| key.is_filled())
-            .for_each(|(key, _)| {
-                key.increment_generation();
-            });
-
-        self.len = 0;
+        let _ = self.drain();
     }
 
     /// Create an iterator over all items in the items in the map
-    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a T> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.slots
             .iter()
             .filter(|(key, _)| key.is_filled())
@@ -289,7 +454,7 @@ where
 
     /// Construct an iterator over all the values in the slot map as mutable
     /// references
-    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut T> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.slots
             .iter_mut()
             .filter(|(key, _)| key.is_filled())
@@ -297,10 +462,60 @@ where
     }
 }
 
+impl<K, P, T> Clone for SlotMap<K, P, T>
+where
+    K: SlotMapKey<P>,
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        SlotMap {
+            slots: self.slots.clone(),
+            len: self.len,
+            next_open_slot: self.next_open_slot,
+            phantom_k: Default::default(),
+            phantom_p: Default::default(),
+        }
+    }
+}
+
+struct Drain<'a, I, T>
+where
+    I: Iterator<Item = &'a mut T>,
+    T: 'a,
+{
+    inner: I,
+
+    phantom_t: PhantomData<T>,
+}
+
+impl<'a, I, T> Iterator for Drain<'a, I, T>
+where
+    I: Iterator<Item = &'a mut T>,
+{
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<'a, I, T> Drop for Drain<'a, I, T>
+where
+    I: Iterator<Item = &'a mut T>,
+{
+    /// When the drain is dropped, we just need to ensure any un-iterated items
+    /// are processed and thus removed correctly form the map
+    fn drop(&mut self) {
+        self.for_each(|_| {})
+    }
+}
+
 #[cfg(test)]
 mod test {
 
     use super::*;
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
 
     #[derive(Debug, Hash, Clone, Copy)]
     struct TestKey(usize, SlotMapKeyData);
@@ -326,7 +541,7 @@ mod test {
     fn test_crud() {
         let mut map = create_test_map();
 
-        let mut key = map.insert(0, "0".to_owned());
+        let key = map.insert(0, "0".to_owned());
 
         assert_eq!(map.len(), 1);
 
@@ -337,8 +552,7 @@ mod test {
             *v = "1".to_owned();
         }
 
-        map.clear();
-        //assert_eq!(map.remove(&key), Some(&mut "1".to_owned()));
+        assert_eq!(map.remove(&key), Some(&mut "1".to_owned()));
         assert_eq!(map.get(&key), None);
 
         assert_eq!(map.len(), 0);
@@ -443,6 +657,84 @@ mod test {
 
         for k in keys.iter() {
             assert_eq!(map.get(k), None);
+        }
+    }
+
+    fn assert_coordinates_eq(k1: &SlotMapKeyData, k2: &SlotMapKeyData) {
+        assert_eq!(k1.chunk_index, k2.chunk_index);
+        assert_eq!(k1.index_in_chunk, k2.index_in_chunk);
+    }
+
+    #[test]
+    fn test_embedded_empty_stack_consistency() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+        let iterations = 50;
+
+        let mut rng = thread_rng();
+
+        for j in 0..iterations {
+            let mut keys = Vec::new();
+
+            for i in 0..insertions {
+                let prev_next_slot = map.next_open_slot;
+
+                let next_next_slot =
+                    map.slots.get_slot(&prev_next_slot).map(|(key, _)| *key);
+
+                keys.push(map.insert(i, format!("{}", i)));
+                assert_coordinates_eq(
+                    &prev_next_slot,
+                    &map.slots.get_slot(&keys.get(i).unwrap().1).unwrap().0,
+                );
+
+                if j > 0 {
+                    assert_coordinates_eq(
+                        next_next_slot.as_ref().unwrap(),
+                        &map.next_open_slot,
+                    );
+                }
+            }
+
+            assert_eq!(map.len(), insertions);
+            assert_eq!(map.slots.filled_chunks.len(), 10);
+            assert_eq!(
+                map.slots.current_chunk_cursor as usize,
+                SLOT_MAP_CHUNK_SIZE / 2
+            );
+
+            map.slots.iter().enumerate().for_each(|(num, (key, _))| {
+                assert_eq!(key.generation, j * 2);
+                assert_eq!(
+                    key.index_in_chunk as usize,
+                    num % SLOT_MAP_CHUNK_SIZE
+                );
+                assert_eq!(key.chunk_index as usize, num / SLOT_MAP_CHUNK_SIZE);
+            });
+
+            assert_eq!(
+                SlotMapKeyData::from(insertions as u64),
+                map.next_open_slot
+            );
+
+            if j % 2 == 0 {
+                keys.shuffle(&mut rng);
+
+                for k in keys.drain(..) {
+                    let prev_next_slot = map.next_open_slot;
+                    assert_eq!(&format!("{}", k.0), map.remove(&k).unwrap());
+                    assert_coordinates_eq(&k.1, &map.next_open_slot);
+
+                    let cleared_slot = map.slots.get_slot(&k.1).unwrap().0;
+
+                    assert_coordinates_eq(&prev_next_slot, &cleared_slot);
+
+                    assert_eq!(2 * j + 1, cleared_slot.generation);
+                }
+            } else {
+                map.clear();
+            }
         }
     }
 }

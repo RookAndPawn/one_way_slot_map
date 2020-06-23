@@ -1,9 +1,7 @@
 use ::rand::seq::SliceRandom;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use one_way_slot_map::define_key_type;
-use one_way_slot_map::{
-    SlotMap as OneWay, SlotMapKeyData, SLOT_MAP_CHUNK_SIZE,
-};
+use one_way_slot_map::{SlotMap as OneWay, SlotMapKeyData};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use slotmap::{DefaultKey, SlotMap};
@@ -12,14 +10,7 @@ use std::collections::HashMap;
 define_key_type!(BenchKey<()> : Clone + Copy + Hash + PartialEq + Eq);
 
 fn bench_key(number: usize) -> BenchKey {
-    BenchKey::from((
-        (),
-        SlotMapKeyData::new(
-            number / SLOT_MAP_CHUNK_SIZE,
-            number % SLOT_MAP_CHUNK_SIZE,
-            0,
-        ),
-    ))
+    BenchKey::from(((), SlotMapKeyData::from(number as u64)))
 }
 
 #[allow(dead_code)]
@@ -173,23 +164,6 @@ fn read_benchmark(c: &mut Criterion) {
 }
 
 fn deletion_benchmark(c: &mut Criterion) {
-    // let mut slotmap_keys: Vec<DefaultKey> = Vec::new();
-
-    // let mut one_way: OneWay<BenchKey, (), usize> = OneWay::new();
-    // let mut slot_map: SlotMap<DefaultKey, usize> = SlotMap::new();
-    // let mut hashmap: HashMap<BenchKey, usize> = HashMap::new();
-
-    // for i in 0..10_000 {
-    //     one_way_keys.push(one_way.insert((), i));
-    //     slotmap_keys.push(slot_map.insert(i));
-    // }
-
-    // for (i, k) in one_way_keys.iter().enumerate() {
-    //     hashmap.insert(*k, i);
-    // }
-
-    // slotmap_keys.shuffle(&mut rng);
-
     c.bench_function("one-way deleting 1M", |b| {
         b.iter_custom(|_| {
             let mut one_way_keys: Vec<BenchKey> = Vec::new();

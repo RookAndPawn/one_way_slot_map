@@ -55,7 +55,7 @@ macro_rules! define_key_type (
 
         $(#[derive($derive_1 $(, $more_derives)*)])?
         pub struct $key_type {
-            pointer: $pointer_type,
+            pub pointer: $pointer_type,
             slot_key: one_way_slot_map::SlotMapKeyData,
         }
 

@@ -11,8 +11,7 @@ const CHUNK_INDEX_SHIFT: u8 = INDEX_IN_CHUNK_BITS;
 const CHUNK_INDEX_MASK: u64 =
     ((0x1 << CHUNK_INDEX_BITS) - 1) << CHUNK_INDEX_SHIFT;
 const GENERATION_SHIFT: u8 = CHUNK_INDEX_SHIFT + CHUNK_INDEX_BITS;
-const GENERATION_MASK: u64 =
-    ((0x1 << GENERATION_BITS) - 1) << GENERATION_SHIFT;
+const GENERATION_MASK: u64 = ((0x1 << GENERATION_BITS) - 1) << GENERATION_SHIFT;
 
 const MAX_INDEX_IN_CHUNK: u16 = INDEX_IN_CHUNK_MASK as u16;
 const MAX_GENERATION: u32 = (0x1 << GENERATION_BITS) - 1 as u32;
@@ -34,27 +33,30 @@ pub struct SlotMapKeyData {
 }
 
 impl SlotMapKeyData {
-
     /// Increase the generation by one, and wraps when the generation
     /// passes the max.
     pub(crate) fn increment_generation(&mut self) {
-
-        if self.generation < MAX_GENERATION {
-            self.generation += 1;
-        } else if self.generation == MAX_GENERATION {
-            self.generation = 0;
-        } else {
-            panic!(
-                "Generation: {} is out of the range allowed by mask: {}",
-                self.generation, MAX_GENERATION
-            );
+        match &mut self.generation {
+            gen if *gen < MAX_GENERATION => *gen += 1,
+            gen if *gen == MAX_GENERATION => *gen = 0,
+            _ => {
+                panic!(
+                    "Generation: {} is out of the range allowed by mask: {}",
+                    self.generation, MAX_GENERATION
+                );
+            }
         }
     }
 
     /// Swap the chunk index and index in chunk fields between self and other
     pub(crate) fn swap_coordinates(&mut self, other: &mut Self) {
-        std::mem::swap(&mut self.chunk_index, &mut other.chunk_index);
-        std::mem::swap(&mut self.index_in_chunk, &mut other.index_in_chunk);
+        let swap_chunk_index = self.chunk_index;
+        self.chunk_index = other.chunk_index;
+        other.chunk_index = swap_chunk_index;
+
+        let swap_index_in_chunk = self.index_in_chunk;
+        self.index_in_chunk = other.index_in_chunk;
+        other.index_in_chunk = swap_index_in_chunk;
     }
 
     /// Increment the coordinates of this slot map key data. It the index in
@@ -82,19 +84,45 @@ impl From<u64> for SlotMapKeyData {
     fn from(input: u64) -> SlotMapKeyData {
         SlotMapKeyData {
             index_in_chunk: (input & INDEX_IN_CHUNK_MASK) as u16,
-            chunk_index: ((input & CHUNK_INDEX_MASK) >> CHUNK_INDEX_BITS)
+            chunk_index: ((input & CHUNK_INDEX_MASK) >> CHUNK_INDEX_SHIFT)
                 as u32,
-            generation: ((input * GENERATION_MASK) >> GENERATION_SHIFT) as u32,
+            generation: ((input & GENERATION_MASK) >> GENERATION_SHIFT) as u32,
         }
     }
 }
 
 impl From<SlotMapKeyData> for u64 {
     fn from(input: SlotMapKeyData) -> u64 {
-        0u64 + (input.index_in_chunk as u64 & INDEX_IN_CHUNK_MASK)
+        (input.index_in_chunk as u64 & INDEX_IN_CHUNK_MASK)
             + (((input.chunk_index as u64) << CHUNK_INDEX_SHIFT)
                 & CHUNK_INDEX_MASK)
             + (((input.generation as u64) << GENERATION_SHIFT)
                 & GENERATION_MASK)
+    }
+}
+
+#[test]
+fn test_coordinate_serialization() {
+    let inc: u64 = 91;
+
+    for i in 0..10_000 {
+        let v = i * inc;
+        let key = SlotMapKeyData::from(v);
+
+        assert_eq!(v, u64::from(key));
+    }
+}
+
+#[test]
+fn test_generation_serialization() {
+    let inc: u32 = 91;
+
+    let mut key = SlotMapKeyData::from(1340850812u64);
+
+    for i in 0..10_000 {
+        let g = i * inc;
+        key.generation = g;
+
+        assert_eq!(key, SlotMapKeyData::from(u64::from(key)));
     }
 }

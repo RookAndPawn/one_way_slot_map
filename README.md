@@ -6,7 +6,7 @@ This is an implementation of the slot map data structure similar to [SlotMap](ht
 
 The data structure uses fixed size chunks (like [SlotMap's DenseSlotMap](https://docs.rs/slotmap/0.4.0/slotmap/dense/struct.DenseSlotMap.html)), so lookups require 2 steps of indirection.
 
-Example Usage:
+## Example Usage:
 
 First create a Key Class with an embedded data type
 ```rust
@@ -31,3 +31,7 @@ let slot = slot_map.get_mut(&key).unwrap();
 assert_eq!(Some(&mut "Updated!"), slot_map.remove(&key));
 assert_eq!(None, slot_map.get(&key));
 ```
+
+## Performance
+
+Benchmarks to come, but in summary, this slot map is about half as fast as fast as the default implementation of [SlotMap's SlotMap](https://docs.rs/slotmap/0.4.0/slotmap/struct.SlotMap.html), slightly faster than [SlotMap's DenseSlotMap](https://docs.rs/slotmap/0.4.0/slotmap/dense/struct.DenseSlotMap.html) and about a dozen times faster than std::collections::HashMap.
