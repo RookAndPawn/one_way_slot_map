@@ -1,6 +1,7 @@
 use super::{SlotMapKey, SlotMapKeyData};
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+use array_macro::array;
 
 /// Size of the individual array chunks in the slot map
 pub const SLOT_MAP_CHUNK_SIZE: usize = 256;
@@ -26,7 +27,7 @@ impl<T> Slots<T> {
     pub fn new() -> Slots<T> {
         Slots {
             current_chunk: Box::new(
-                array_macro::array![None; SLOT_MAP_CHUNK_SIZE],
+                array![None; SLOT_MAP_CHUNK_SIZE],
             ),
             filled_chunks: Vec::new(),
             current_chunk_index: Default::default(),
@@ -135,30 +136,30 @@ impl<T> Slots<T> {
 
         full_chunks_iter.chain(current_chunk_iter)
     }
-}
 
-impl<T> Clone for Slots<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        let mut current_chunk: Box<
-            [Option<(SlotMapKeyData, T)>; SLOT_MAP_CHUNK_SIZE],
-        > = Box::new(array_macro::array![None; SLOT_MAP_CHUNK_SIZE]);
-
-        current_chunk
-            .iter_mut()
-            .zip(self.current_chunk.iter())
-            .for_each(|(dst, src)| *dst = src.clone());
-
+    /// Create new slots based on this one with the values mapped with the given
+    /// function
+    fn map<R>(&self, mut mapper: impl FnMut(&T) -> R) -> Slots<R> {
         Slots {
-            current_chunk,
-            filled_chunks: self.filled_chunks.clone(),
-            current_chunk_cursor: self.current_chunk_cursor,
+            current_chunk: Box::new(
+                array_macro::array![|i| {
+                    let slot_opt = self.current_chunk.get(i).unwrap();
+                    slot_opt.as_ref().map(|slot| (slot.0, mapper(&slot.1)))
+                }; SLOT_MAP_CHUNK_SIZE],
+            ),
+            filled_chunks: self.filled_chunks.iter().map(|chunk| {
+                Box::new(array!(|i| {
+                    let slot = chunk.get(i).unwrap();
+                    (slot.0, mapper(&slot.1))
+                }; SLOT_MAP_CHUNK_SIZE))
+            })
+            .collect(),
             current_chunk_index: self.current_chunk_index,
+            current_chunk_cursor: self.current_chunk_cursor,
         }
     }
 }
+
 
 /// Implementation of a slot map that limits the restrictions on slotted keys
 /// and values by preventing retrieval of original values without explicit
@@ -495,6 +496,18 @@ where
             .filter(|(key, _)| key.is_filled())
             .map(|(_, value)| value)
     }
+
+    /// Create a new map that has the same struture as this one, but with the
+    /// values mapped with the given closure
+    pub fn map<F, R>(&self, mapper: F) -> SlotMap<K, P, R> where F: FnMut(&T) -> R {
+        SlotMap {
+            slots: self.slots.map(mapper),
+            len: self.len,
+            next_open_slot: self.next_open_slot,
+            phantom_k: Default::default(),
+            phantom_p: Default::default()
+        }
+    }
 }
 
 impl<K, P, T> Clone for SlotMap<K, P, T>
@@ -503,13 +516,7 @@ where
     T: Clone,
 {
     fn clone(&self) -> Self {
-        SlotMap {
-            slots: self.slots.clone(),
-            len: self.len,
-            next_open_slot: self.next_open_slot,
-            phantom_k: Default::default(),
-            phantom_p: Default::default(),
-        }
+        self.map(T::clone)
     }
 }
 
