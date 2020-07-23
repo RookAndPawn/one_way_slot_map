@@ -1,7 +1,7 @@
 use super::{SlotMapKey, SlotMapKeyData};
+use array_macro::array;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use array_macro::array;
 
 /// Size of the individual array chunks in the slot map
 pub const SLOT_MAP_CHUNK_SIZE: usize = 256;
@@ -26,9 +26,7 @@ struct Slots<T> {
 impl<T> Slots<T> {
     pub fn new() -> Slots<T> {
         Slots {
-            current_chunk: Box::new(
-                array![None; SLOT_MAP_CHUNK_SIZE],
-            ),
+            current_chunk: Box::new(array![None; SLOT_MAP_CHUNK_SIZE]),
             filled_chunks: Vec::new(),
             current_chunk_index: Default::default(),
             current_chunk_cursor: Default::default(),
@@ -141,39 +139,47 @@ impl<T> Slots<T> {
     /// function
     fn map<R>(&self, mut mapper: impl FnMut(&T) -> R) -> Slots<R> {
         Slots {
-            current_chunk: Box::new(
-                array_macro::array![|i| {
+            current_chunk: Box::new(array_macro::array![|i| {
                     let slot_opt = self.current_chunk.get(i).unwrap();
                     slot_opt.as_ref().map(|slot| (slot.0, mapper(&slot.1)))
-                }; SLOT_MAP_CHUNK_SIZE],
-            ),
-            filled_chunks: self.filled_chunks.iter().map(|chunk| {
-                Box::new(array!(|i| {
+                }; SLOT_MAP_CHUNK_SIZE]),
+            filled_chunks: self
+                .filled_chunks
+                .iter()
+                .map(|chunk| {
+                    Box::new(array!(|i| {
                     let slot = chunk.get(i).unwrap();
                     (slot.0, mapper(&slot.1))
                 }; SLOT_MAP_CHUNK_SIZE))
-            })
-            .collect(),
+                })
+                .collect(),
             current_chunk_index: self.current_chunk_index,
             current_chunk_cursor: self.current_chunk_cursor,
         }
     }
 }
 
+/// Inner representation of the slot map that is not dependent on the type info
+/// for the key or pointer types. This allows the main slotmap type to be
+/// repr(transparent)
+struct Inner<T> {
+    slots: Slots<T>,
+    next_open_slot: SlotMapKeyData,
+    len: usize,
+}
 
 /// Implementation of a slot map that limits the restrictions on slotted keys
 /// and values by preventing retrieval of original values without explicit
 /// replacement
+#[repr(transparent)]
 pub struct SlotMap<K, P, T>
 where
     K: SlotMapKey<P>,
 {
-    slots: Slots<T>,
-    next_open_slot: SlotMapKeyData,
-    len: usize,
+    inner: Inner<T>,
 
-    phantom_k: PhantomData<K>,
-    phantom_p: PhantomData<P>,
+    _phantom_k: PhantomData<*const K>,
+    _phantom_p: PhantomData<*const P>,
 }
 
 impl<K, P, T> std::fmt::Debug for SlotMap<K, P, T>
@@ -202,12 +208,14 @@ where
     /// Create a new default simple slot map
     pub fn new() -> SlotMap<K, P, T> {
         SlotMap {
-            slots: Slots::new(),
-            next_open_slot: Default::default(),
-            len: Default::default(),
+            inner: Inner {
+                slots: Slots::new(),
+                next_open_slot: Default::default(),
+                len: Default::default(),
+            },
 
-            phantom_k: PhantomData::default(),
-            phantom_p: PhantomData::default(),
+            _phantom_k: PhantomData::default(),
+            _phantom_p: PhantomData::default(),
         }
     }
 
@@ -224,7 +232,7 @@ where
     /// assert_eq!(2, map.len());
     /// ```
     pub fn len(&self) -> usize {
-        self.len
+        self.inner.len
     }
 
     /// Tells if this map is empty
@@ -242,7 +250,7 @@ where
     /// assert_eq!(false, map.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.inner.len == 0
     }
 
     /// insert the given item into the slot map and return its key
@@ -258,12 +266,14 @@ where
     /// assert_eq!(&SlotMapKeyData::from(0), key.borrow());
     /// ```
     pub fn insert(&mut self, pointer: P, value: T) -> K {
-        let next_slot = &mut self.next_open_slot;
+        let next_slot = &mut self.inner.next_open_slot;
 
-        let key_data = if next_slot.chunk_index < self.slots.current_chunk_index
-            || next_slot.index_in_chunk < self.slots.current_chunk_cursor
+        let key_data = if next_slot.chunk_index
+            < self.inner.slots.current_chunk_index
+            || next_slot.index_in_chunk < self.inner.slots.current_chunk_cursor
         {
             let (new_next_slot, old_val) = self
+                .inner
                 .slots
                 .get_existing_slot_mut(next_slot)
                 .expect("invalid next slot pointer");
@@ -273,17 +283,18 @@ where
             *new_next_slot
         } else {
             let key_data = *next_slot;
-            let slot_opt = self.slots.get_current_chunk_slot_mut(next_slot);
+            let slot_opt =
+                self.inner.slots.get_current_chunk_slot_mut(next_slot);
             *slot_opt = Some((*next_slot, value));
-            if self.next_open_slot.increment_coordinates() {
-                self.slots.move_current_chunk_to_filled_chunk()
+            if self.inner.next_open_slot.increment_coordinates() {
+                self.inner.slots.move_current_chunk_to_filled_chunk()
             } else {
-                self.slots.current_chunk_cursor += 1;
+                self.inner.slots.current_chunk_cursor += 1;
             }
             key_data
         };
 
-        self.len += 1;
+        self.inner.len += 1;
 
         K::from((pointer, key_data))
     }
@@ -319,7 +330,8 @@ where
     ) -> Option<&T> {
         let key_data = key.borrow();
 
-        self.slots
+        self.inner
+            .slots
             .get_slot(key_data)
             .filter(|slot| slot.0.is_filled())
             .filter(|slot| slot.0.generation == key_data.generation)
@@ -362,7 +374,8 @@ where
     ) -> Option<&mut T> {
         let key_data = key.borrow();
 
-        self.slots
+        self.inner
+            .slots
             .get_existing_slot_mut(key_data)
             .filter(|slot| slot.0.is_filled())
             .filter(|slot| slot.0.generation == key_data.generation)
@@ -399,14 +412,15 @@ where
         let key_data = key.borrow();
 
         if let Some((key, value)) = self
+            .inner
             .slots
             .get_existing_slot_mut(key_data)
             .filter(|(key, _)| key.is_filled())
             .filter(|(key, _)| key.generation == key_data.generation)
         {
-            self.len -= 1;
+            self.inner.len -= 1;
             key.increment_generation();
-            key.swap_coordinates(&mut self.next_open_slot);
+            key.swap_coordinates(&mut self.inner.next_open_slot);
             Some(value)
         } else {
             None
@@ -443,7 +457,8 @@ where
     ) -> bool {
         let key_data = key.borrow();
 
-        self.slots
+        self.inner
+            .slots
             .get_slot(key_data)
             .filter(|(existing_key, _)| {
                 existing_key.generation == key_data.generation
@@ -453,11 +468,12 @@ where
 
     /// Remove all items from this map and process them one-by-one
     pub fn drain(&mut self) -> impl Iterator<Item = &mut T> {
-        let len = &mut self.len;
-        let next_open_slot = &mut self.next_open_slot;
+        let len = &mut self.inner.len;
+        let next_open_slot = &mut self.inner.next_open_slot;
 
         Drain {
             inner: self
+                .inner
                 .slots
                 .iter_mut()
                 .filter(|(key, _)| key.is_filled())
@@ -482,7 +498,8 @@ where
 
     /// Create an iterator over all items in the items in the map
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.slots
+        self.inner
+            .slots
             .iter()
             .filter(|(key, _)| key.is_filled())
             .map(|(_, value)| value)
@@ -491,7 +508,8 @@ where
     /// Construct an iterator over all the values in the slot map as mutable
     /// references
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.slots
+        self.inner
+            .slots
             .iter_mut()
             .filter(|(key, _)| key.is_filled())
             .map(|(_, value)| value)
@@ -499,13 +517,18 @@ where
 
     /// Create a new map that has the same struture as this one, but with the
     /// values mapped with the given closure
-    pub fn map<F, R>(&self, mapper: F) -> SlotMap<K, P, R> where F: FnMut(&T) -> R {
+    pub fn map<F, R>(&self, mapper: F) -> SlotMap<K, P, R>
+    where
+        F: FnMut(&T) -> R,
+    {
         SlotMap {
-            slots: self.slots.map(mapper),
-            len: self.len,
-            next_open_slot: self.next_open_slot,
-            phantom_k: Default::default(),
-            phantom_p: Default::default()
+            inner: Inner {
+                slots: self.inner.slots.map(mapper),
+                len: self.inner.len,
+                next_open_slot: self.inner.next_open_slot,
+            },
+            _phantom_k: Default::default(),
+            _phantom_p: Default::default(),
         }
     }
 }
@@ -722,55 +745,70 @@ mod test {
             let mut keys = Vec::new();
 
             for i in 0..insertions {
-                let prev_next_slot = map.next_open_slot;
+                let prev_next_slot = map.inner.next_open_slot;
 
-                let next_next_slot =
-                    map.slots.get_slot(&prev_next_slot).map(|(key, _)| *key);
+                let next_next_slot = map
+                    .inner
+                    .slots
+                    .get_slot(&prev_next_slot)
+                    .map(|(key, _)| *key);
 
                 keys.push(map.insert(i, format!("{}", i)));
                 assert_coordinates_eq(
                     &prev_next_slot,
-                    &map.slots.get_slot(&keys.get(i).unwrap().1).unwrap().0,
+                    &map.inner
+                        .slots
+                        .get_slot(&keys.get(i).unwrap().1)
+                        .unwrap()
+                        .0,
                 );
 
                 if j > 0 {
                     assert_coordinates_eq(
                         next_next_slot.as_ref().unwrap(),
-                        &map.next_open_slot,
+                        &map.inner.next_open_slot,
                     );
                 }
             }
 
             assert_eq!(map.len(), insertions);
-            assert_eq!(map.slots.filled_chunks.len(), 10);
+            assert_eq!(map.inner.slots.filled_chunks.len(), 10);
             assert_eq!(
-                map.slots.current_chunk_cursor as usize,
+                map.inner.slots.current_chunk_cursor as usize,
                 SLOT_MAP_CHUNK_SIZE / 2
             );
 
-            map.slots.iter().enumerate().for_each(|(num, (key, _))| {
-                assert_eq!(key.generation, j * 2);
-                assert_eq!(
-                    key.index_in_chunk as usize,
-                    num % SLOT_MAP_CHUNK_SIZE
-                );
-                assert_eq!(key.chunk_index as usize, num / SLOT_MAP_CHUNK_SIZE);
-            });
+            map.inner
+                .slots
+                .iter()
+                .enumerate()
+                .for_each(|(num, (key, _))| {
+                    assert_eq!(key.generation, j * 2);
+                    assert_eq!(
+                        key.index_in_chunk as usize,
+                        num % SLOT_MAP_CHUNK_SIZE
+                    );
+                    assert_eq!(
+                        key.chunk_index as usize,
+                        num / SLOT_MAP_CHUNK_SIZE
+                    );
+                });
 
             assert_eq!(
                 SlotMapKeyData::from(insertions as u64),
-                map.next_open_slot
+                map.inner.next_open_slot
             );
 
             if j % 2 == 0 {
                 keys.shuffle(&mut rng);
 
                 for k in keys.drain(..) {
-                    let prev_next_slot = map.next_open_slot;
+                    let prev_next_slot = map.inner.next_open_slot;
                     assert_eq!(&format!("{}", k.0), map.remove(&k).unwrap());
-                    assert_coordinates_eq(&k.1, &map.next_open_slot);
+                    assert_coordinates_eq(&k.1, &map.inner.next_open_slot);
 
-                    let cleared_slot = map.slots.get_slot(&k.1).unwrap().0;
+                    let cleared_slot =
+                        map.inner.slots.get_slot(&k.1).unwrap().0;
 
                     assert_coordinates_eq(&prev_next_slot, &cleared_slot);
 
@@ -803,9 +841,10 @@ mod test {
 
         let map2 = map.clone();
 
-        map.slots
+        map.inner
+            .slots
             .iter()
-            .zip(map2.slots.iter())
+            .zip(map2.inner.slots.iter())
             .for_each(|(left, right)| {
                 assert_eq!(left, right);
             })
