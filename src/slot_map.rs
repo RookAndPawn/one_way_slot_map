@@ -324,12 +324,48 @@ where
     /// Same as get method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// getting data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let _ = map.insert((), "Hello!");
+    ///
+    /// assert_eq!(Some(&"Hello!"), map.get_unbounded(&OtherKey::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = OtherKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get_unbounded(&fake_key));
+    /// ```
     pub fn get_unbounded(
         &self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&T> {
-        let key_data = key.borrow();
+        self.get_raw(key.borrow())
+    }
 
+    /// Similar to get_unbounded, but only requires to slotmap key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let _ = map.insert((), "Hello!");
+    ///
+    /// assert_eq!(Some(&"Hello!"), map.get_raw(&SlotMapKeyData::default()));
+    ///
+    /// // Create key data that won't be in the map. This is non-ergonomic
+    /// // because it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert_eq!(None, map.get_raw(&fake_key_data));
+    /// ```
+    pub fn get_raw(&self, key_data: &SlotMapKeyData) -> Option<&T> {
         self.inner
             .slots
             .get_slot(key_data)
@@ -368,12 +404,65 @@ where
     /// Same as get_mut method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// writing data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// {
+    ///     if let Some(item) = map.get_mut_unbounded(&OtherKey::default()) {
+    ///         *item = "World?";
+    ///     }
+    /// }
+    /// assert_eq!(Some(&"World?"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = TestKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get_mut(&fake_key));
+    /// ```
     pub fn get_mut_unbounded(
         &mut self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&mut T> {
         let key_data = key.borrow();
 
+        self.inner
+            .slots
+            .get_existing_slot_mut(key_data)
+            .filter(|slot| slot.0.is_filled())
+            .filter(|slot| slot.0.generation == key_data.generation)
+            .map(|slot| &mut slot.1)
+    }
+
+    /// Similar to get_unbounded_mut, but only requires to slotmap key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// {
+    ///     if let Some(item) = map.get_mut_raw(&SlotMapKeyData::default()) {
+    ///         *item = "World?";
+    ///     }
+    /// }
+    /// assert_eq!(Some(&"World?"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert_eq!(None, map.get_mut_raw(&fake_key_data));
+    /// ```
+    pub fn get_mut_raw(&mut self, key_data: &SlotMapKeyData) -> Option<&mut T> {
         self.inner
             .slots
             .get_existing_slot_mut(key_data)
@@ -405,12 +494,44 @@ where
     /// Same as remove method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// writing data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.get(&key).is_some());
+    ///
+    /// assert_eq!(Some(&mut "Hello!"), map.remove_unbounded(&OtherKey::default()));
+    ///
+    /// assert_eq!(None, map.get(&key));
+    /// ```
     pub fn remove_unbounded(
         &mut self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&mut T> {
-        let key_data = key.borrow();
+        self.remove_raw(key.borrow())
+    }
 
+    /// Similar to remove_unbounded but only requires the slot map key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// # define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.get(&key).is_some());
+    ///
+    /// assert_eq!(Some(&mut "Hello!"), map.remove_raw(&SlotMapKeyData::default()));
+    ///
+    /// assert_eq!(None, map.get(&key));
+    /// ```
+    pub fn remove_raw(&mut self, key_data: &SlotMapKeyData) -> Option<&mut T> {
         if let Some((key, value)) = self
             .inner
             .slots
@@ -451,12 +572,50 @@ where
     /// Same as contains_key method, but doesn't restrict input key to the type
     /// bound to this map. This method isn't unsafe; it just doesn't prevent you
     /// from getting data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    ///
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.contains_key_unbounded(&OtherKey::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = OtherKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert!(!map.contains_key_unbounded(&fake_key));
+    /// ```
     pub fn contains_key_unbounded(
         &self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> bool {
-        let key_data = key.borrow();
+        self.contains_key_raw(key.borrow())
+    }
 
+    /// Similar to contains_key_unbounded but only requires slot map key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    ///
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.contains_key_raw(&SlotMapKeyData::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert!(!map.contains_key_raw(&fake_key_data));
+    /// ```
+    pub fn contains_key_raw(&self, key_data: &SlotMapKeyData) -> bool {
         self.inner
             .slots
             .get_slot(key_data)
