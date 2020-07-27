@@ -106,7 +106,7 @@ impl<T> Slots<T> {
     }
 
     /// Construct an iterator over all initialized slots
-    pub fn iter(&self) -> impl Iterator<Item = &(SlotMapKeyData, T)> {
+    pub fn values(&self) -> impl Iterator<Item = &(SlotMapKeyData, T)> {
         let full_chunks_iter =
             self.filled_chunks.iter().flat_map(|slc| slc.iter());
 
@@ -120,7 +120,7 @@ impl<T> Slots<T> {
     }
 
     /// Construct an iterator over all initialized slots as mutable references
-    pub fn iter_mut(
+    pub fn values_mut(
         &mut self,
     ) -> impl Iterator<Item = &mut (SlotMapKeyData, T)> {
         let full_chunks_iter =
@@ -131,6 +131,89 @@ impl<T> Slots<T> {
             .iter_mut()
             .take(self.current_chunk_cursor as usize)
             .filter_map(Option::as_mut);
+
+        full_chunks_iter.chain(current_chunk_iter)
+    }
+
+    /// Construct an iterator over all initialized slots where each item is a
+    /// tuple of the raw slotmap key data for the slot and the information
+    /// stored at the slot
+    pub fn iter_raw(
+        &self,
+    ) -> impl Iterator<Item = (SlotMapKeyData, &(SlotMapKeyData, T))> {
+        let full_chunks_iter = self.filled_chunks.iter().enumerate().flat_map(
+            |(chunk_index, slc)| {
+                slc.iter().enumerate().map(move |(index_in_chunk, slot)| {
+                    let key_data = SlotMapKeyData {
+                        chunk_index: chunk_index as u32,
+                        index_in_chunk: index_in_chunk as u16,
+                        generation: slot.0.generation,
+                    };
+
+                    (key_data, slot)
+                })
+            },
+        );
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter()
+            .take(self.current_chunk_cursor as usize)
+            .filter_map(Option::as_ref)
+            .enumerate()
+            .map(move |(index_in_chunk, slot)| {
+                let key_data = SlotMapKeyData {
+                    chunk_index: self.current_chunk_index as u32,
+                    index_in_chunk: index_in_chunk as u16,
+                    generation: slot.0.generation,
+                };
+
+                (key_data, slot)
+            });
+
+        full_chunks_iter.chain(current_chunk_iter)
+    }
+
+    /// Construct an iterator over all initialized slots where each item is a
+    /// tuple of the raw slotmap key data for the slot and a mutable reference
+    /// to the information stored at the slot
+    pub fn iter_mut_raw(
+        &mut self,
+    ) -> impl Iterator<Item = (SlotMapKeyData, &mut (SlotMapKeyData, T))> {
+        let full_chunks_iter =
+            self.filled_chunks.iter_mut().enumerate().flat_map(
+                |(chunk_index, slc)| {
+                    slc.iter_mut().enumerate().map(
+                        move |(index_in_chunk, slot)| {
+                            let key_data = SlotMapKeyData {
+                                chunk_index: chunk_index as u32,
+                                index_in_chunk: index_in_chunk as u16,
+                                generation: slot.0.generation,
+                            };
+
+                            (key_data, slot)
+                        },
+                    )
+                },
+            );
+
+        let current_chunk_index = self.current_chunk_index;
+
+        let current_chunk_iter = self
+            .current_chunk
+            .iter_mut()
+            .take(self.current_chunk_cursor as usize)
+            .filter_map(Option::as_mut)
+            .enumerate()
+            .map(move |(index_in_chunk, slot)| {
+                let key_data = SlotMapKeyData {
+                    chunk_index: current_chunk_index as u32,
+                    index_in_chunk: index_in_chunk as u16,
+                    generation: slot.0.generation,
+                };
+
+                (key_data, slot)
+            });
 
         full_chunks_iter.chain(current_chunk_iter)
     }
@@ -188,7 +271,7 @@ where
     K: SlotMapKey<P>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter()).finish()
+        f.debug_list().entries(self.values()).finish()
     }
 }
 
@@ -324,12 +407,48 @@ where
     /// Same as get method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// getting data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let _ = map.insert((), "Hello!");
+    ///
+    /// assert_eq!(Some(&"Hello!"), map.get_unbounded(&OtherKey::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = OtherKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get_unbounded(&fake_key));
+    /// ```
     pub fn get_unbounded(
         &self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&T> {
-        let key_data = key.borrow();
+        self.get_raw(key.borrow())
+    }
 
+    /// Similar to get_unbounded, but only requires to slotmap key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let _ = map.insert((), "Hello!");
+    ///
+    /// assert_eq!(Some(&"Hello!"), map.get_raw(&SlotMapKeyData::default()));
+    ///
+    /// // Create key data that won't be in the map. This is non-ergonomic
+    /// // because it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert_eq!(None, map.get_raw(&fake_key_data));
+    /// ```
+    pub fn get_raw(&self, key_data: &SlotMapKeyData) -> Option<&T> {
         self.inner
             .slots
             .get_slot(key_data)
@@ -368,12 +487,65 @@ where
     /// Same as get_mut method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// writing data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// {
+    ///     if let Some(item) = map.get_mut_unbounded(&OtherKey::default()) {
+    ///         *item = "World?";
+    ///     }
+    /// }
+    /// assert_eq!(Some(&"World?"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = TestKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert_eq!(None, map.get_mut(&fake_key));
+    /// ```
     pub fn get_mut_unbounded(
         &mut self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&mut T> {
         let key_data = key.borrow();
 
+        self.inner
+            .slots
+            .get_existing_slot_mut(key_data)
+            .filter(|slot| slot.0.is_filled())
+            .filter(|slot| slot.0.generation == key_data.generation)
+            .map(|slot| &mut slot.1)
+    }
+
+    /// Similar to get_unbounded_mut, but only requires to slotmap key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// {
+    ///     if let Some(item) = map.get_mut_raw(&SlotMapKeyData::default()) {
+    ///         *item = "World?";
+    ///     }
+    /// }
+    /// assert_eq!(Some(&"World?"), map.get(&key));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert_eq!(None, map.get_mut_raw(&fake_key_data));
+    /// ```
+    pub fn get_mut_raw(&mut self, key_data: &SlotMapKeyData) -> Option<&mut T> {
         self.inner
             .slots
             .get_existing_slot_mut(key_data)
@@ -405,12 +577,44 @@ where
     /// Same as remove method, but doesn't restrict input key to the type bound
     /// to this map. This method isn't unsafe; it just doesn't prevent you from
     /// writing data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.get(&key).is_some());
+    ///
+    /// assert_eq!(Some(&mut "Hello!"), map.remove_unbounded(&OtherKey::default()));
+    ///
+    /// assert_eq!(None, map.get(&key));
+    /// ```
     pub fn remove_unbounded(
         &mut self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> Option<&mut T> {
-        let key_data = key.borrow();
+        self.remove_raw(key.borrow())
+    }
 
+    /// Similar to remove_unbounded but only requires the slot map key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// # define_key_type!(TestKey<()>);
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.get(&key).is_some());
+    ///
+    /// assert_eq!(Some(&mut "Hello!"), map.remove_raw(&SlotMapKeyData::default()));
+    ///
+    /// assert_eq!(None, map.get(&key));
+    /// ```
+    pub fn remove_raw(&mut self, key_data: &SlotMapKeyData) -> Option<&mut T> {
         if let Some((key, value)) = self
             .inner
             .slots
@@ -451,12 +655,50 @@ where
     /// Same as contains_key method, but doesn't restrict input key to the type
     /// bound to this map. This method isn't unsafe; it just doesn't prevent you
     /// from getting data with a key of the wrong type
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    /// define_key_type!(OtherKey<()> : Default);
+    ///
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.contains_key_unbounded(&OtherKey::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key = OtherKey::from(((), SlotMapKeyData::from(1u64)));
+    ///
+    /// assert!(!map.contains_key_unbounded(&fake_key));
+    /// ```
     pub fn contains_key_unbounded(
         &self,
         key: &impl Borrow<SlotMapKeyData>,
     ) -> bool {
-        let key_data = key.borrow();
+        self.contains_key_raw(key.borrow())
+    }
 
+    /// Similar to contains_key_unbounded but only requires slot map key data
+    ///
+    /// ```
+    /// # use one_way_slot_map::*;
+    /// define_key_type!(TestKey<()>);
+    ///
+    /// let mut map = SlotMap::<TestKey,(),&'static str>::new();
+    ///
+    /// let key = map.insert((), "Hello!");
+    ///
+    /// assert!(map.contains_key_raw(&SlotMapKeyData::default()));
+    ///
+    /// // Create a key that won't be in the map. This is non-ergonomic because
+    /// // it's not really a use case we expect,
+    /// let fake_key_data = SlotMapKeyData::from(1u64);
+    ///
+    /// assert!(!map.contains_key_raw(&fake_key_data));
+    /// ```
+    pub fn contains_key_raw(&self, key_data: &SlotMapKeyData) -> bool {
         self.inner
             .slots
             .get_slot(key_data)
@@ -475,7 +717,7 @@ where
             inner: self
                 .inner
                 .slots
-                .iter_mut()
+                .values_mut()
                 .filter(|(key, _)| key.is_filled())
                 .map(move |(key, val)| {
                     *len -= 1;
@@ -496,26 +738,76 @@ where
         let _ = self.drain();
     }
 
-    /// Create an iterator over all items in the items in the map
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
+    /// Get an iterator over keys and values given a way to get the pointer from
+    /// the stored value.
+    pub fn iter<F>(
+        &self,
+        mut pointer_finder: F,
+    ) -> impl Iterator<Item = (K, &T)>
+    where
+        F: FnMut(&T) -> P,
+    {
+        self.iter_raw().map(move |(key_data, v)| {
+            (K::from(((&mut pointer_finder)(v), key_data)), v)
+        })
+    }
+
+    /// Get an iterator over keys and mutable values given a way to get the
+    /// pointer from the stored value.
+    pub fn iter_mut<F>(
+        &mut self,
+        mut pointer_finder: F,
+    ) -> impl Iterator<Item = (K, &mut T)>
+    where
+        F: FnMut(&T) -> P,
+    {
+        self.iter_mut_raw().map(move |(key_data, v)| {
+            (K::from(((&mut pointer_finder)(v), key_data)), v)
+        })
+    }
+
+    /// Create an iterator over all raw key data and values for items present
+    /// in the slot map
+    pub fn iter_raw(&self) -> impl Iterator<Item = (SlotMapKeyData, &T)> {
         self.inner
             .slots
-            .iter()
+            .iter_raw()
+            .filter(|(key_data, _)| key_data.is_filled())
+            .map(|(key_data, (_, value))| (key_data, value))
+    }
+
+    /// Create an iterator over all raw key data and mutable values for items
+    /// present in the slot map
+    pub fn iter_mut_raw(
+        &mut self,
+    ) -> impl Iterator<Item = (SlotMapKeyData, &mut T)> {
+        self.inner
+            .slots
+            .iter_mut_raw()
+            .filter(|(key_data, _)| key_data.is_filled())
+            .map(|(key_data, (_, value))| (key_data, value))
+    }
+
+    /// Create an iterator over all items in the items in the map
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        self.inner
+            .slots
+            .values()
             .filter(|(key, _)| key.is_filled())
             .map(|(_, value)| value)
     }
 
     /// Construct an iterator over all the values in the slot map as mutable
     /// references
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.inner
             .slots
-            .iter_mut()
+            .values_mut()
             .filter(|(key, _)| key.is_filled())
             .map(|(_, value)| value)
     }
 
-    /// Create a new map that has the same struture as this one, but with the
+    /// Create a new map that has the same structure as this one, but with the
     /// values mapped with the given closure
     pub fn map<F, R>(&self, mapper: F) -> SlotMap<K, P, R>
     where
@@ -623,10 +915,6 @@ mod test {
         assert_eq!(map.get(&key), None);
 
         assert_eq!(map.len(), 0);
-
-        map.iter().for_each(|v| {
-            dbg!(v);
-        });
     }
 
     #[test]
@@ -656,7 +944,7 @@ mod test {
     }
 
     #[test]
-    fn test_iter() {
+    fn test_iter_raw() {
         let mut map = create_test_map();
 
         let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
@@ -669,15 +957,68 @@ mod test {
 
         let mut counter = 0usize;
 
-        for v in map.iter() {
+        for (key_data, v) in map.iter_raw() {
+            assert_eq!(&format!("{}", counter), v);
+            assert_eq!(map.get_raw(&key_data), Some(v));
+            counter += 1;
+        }
+
+        assert_eq!(insertions, counter);
+    }
+
+    #[test]
+    fn test_iter_mut_raw() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+
+        let mut keys = Vec::new();
+
+        for i in 0..insertions {
+            keys.push(map.insert(i, format!("{}", i)));
+        }
+
+        let mut counter = 0usize;
+
+        let mut expected = Vec::new();
+
+        for (key_data, v) in map.iter_mut_raw() {
+            *v = format!("{}", (counter * 2) + 1);
+            expected.push((key_data, v.clone()));
+            counter += 1;
+        }
+
+        for (k, expected_v) in expected.iter() {
+            assert_eq!(map.get_raw(k), Some(expected_v));
+        }
+
+        assert_eq!(insertions, counter);
+    }
+
+    #[test]
+    fn test_values_iterator() {
+        let mut map = create_test_map();
+
+        let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
+
+        let mut keys = Vec::new();
+
+        for i in 0..insertions {
+            keys.push(map.insert(i, format!("{}", i)));
+        }
+
+        let mut counter = 0usize;
+
+        for v in map.values() {
             assert_eq!(&format!("{}", counter), v);
             counter += 1;
         }
 
         assert_eq!(insertions, counter);
     }
+
     #[test]
-    fn test_iter_mut() {
+    fn test_values_mut_iterator() {
         let mut map = create_test_map();
 
         let insertions = SLOT_MAP_CHUNK_SIZE * 10 + SLOT_MAP_CHUNK_SIZE / 2;
@@ -690,7 +1031,7 @@ mod test {
 
         let mut counter = 0usize;
 
-        for v in map.iter_mut() {
+        for v in map.values_mut() {
             *v = format!("{}", (counter * 2) + 1);
             counter += 1;
         }
@@ -720,7 +1061,7 @@ mod test {
 
         assert_eq!(map.len(), 0);
 
-        assert_eq!(map.iter().count(), 0);
+        assert_eq!(map.values().count(), 0);
 
         for k in keys.iter() {
             assert_eq!(map.get(k), None);
@@ -780,7 +1121,7 @@ mod test {
 
             map.inner
                 .slots
-                .iter()
+                .values()
                 .enumerate()
                 .for_each(|(num, (key, _))| {
                     assert_eq!(key.generation, j * 2);
@@ -843,8 +1184,8 @@ mod test {
 
         map.inner
             .slots
-            .iter()
-            .zip(map2.inner.slots.iter())
+            .values()
+            .zip(map2.inner.slots.values())
             .for_each(|(left, right)| {
                 assert_eq!(left, right);
             })
