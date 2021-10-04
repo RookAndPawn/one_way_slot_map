@@ -14,7 +14,7 @@ const GENERATION_SHIFT: u8 = CHUNK_INDEX_SHIFT + CHUNK_INDEX_BITS;
 const GENERATION_MASK: u64 = ((0x1 << GENERATION_BITS) - 1) << GENERATION_SHIFT;
 
 const MAX_INDEX_IN_CHUNK: u16 = INDEX_IN_CHUNK_MASK as u16;
-const MAX_GENERATION: u32 = (0x1 << GENERATION_BITS) - 1 as u32;
+const MAX_GENERATION: u32 = (0x1 << GENERATION_BITS) - 1;
 
 /// Encapsulation of all the information that defines a slot in the slot map.
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Default, Eq)]

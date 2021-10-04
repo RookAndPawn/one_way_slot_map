@@ -1,6 +1,6 @@
 [package]
 name = "one_way_slot_map"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Kevin Guthrie <kevin.guthrie@gmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
@@ -11,13 +11,12 @@ keywords = ["slotmap", "storage"]
 categories = ["data-structures"]
 
 [dependencies]
-array-macro = "1.0.5"
 
 [dev-dependencies]
 static_assertions = "1.1.0"
 criterion = "0.3"
-rand = "0.7.3"
-slotmap = "0.4.0"
+rand = "0.8.4"
+slotmap = "1.0.6"
 
 [[bench]]
 name = "slotmap_comparison"

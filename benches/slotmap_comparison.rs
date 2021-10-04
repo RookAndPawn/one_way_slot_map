@@ -17,12 +17,15 @@ fn bench_key(number: usize) -> BenchKey {
 fn random_string(max_len: usize) -> String {
     let mut rng = thread_rng();
 
-    let len = rng.gen_range(0usize, max_len);
+    let len = rng.gen_range(0usize..max_len);
 
-    std::iter::repeat(())
-        .map(|()| rng.sample(Alphanumeric))
-        .take(len)
-        .collect()
+    String::from_utf8(
+        std::iter::repeat(())
+            .map(|()| rng.sample(Alphanumeric))
+            .take(len)
+            .collect(),
+    )
+    .expect("Using alphanumeric chars makes for valid u8 strings")
 }
 
 fn insert_many_one_way(slot_map: &mut OneWay<BenchKey, (), usize>, n: usize) {
