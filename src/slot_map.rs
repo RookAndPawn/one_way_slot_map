@@ -338,8 +338,7 @@ where
 {
     inner: Inner<T>,
 
-    _phantom_k: PhantomData<*const K>,
-    _phantom_p: PhantomData<*const P>,
+    _phantom: PhantomData<fn(P, K)>,
 }
 
 /// This is here because using *const K/P in the phantom data prevent the slot
@@ -400,8 +399,7 @@ where
                 len: Default::default(),
             },
 
-            _phantom_k: PhantomData::default(),
-            _phantom_p: PhantomData::default(),
+            _phantom: PhantomData::default(),
         }
     }
 
@@ -836,7 +834,7 @@ where
 
                     val
                 }),
-            phantom_t: Default::default(),
+            phantom: Default::default(),
         }
     }
 
@@ -931,8 +929,7 @@ where
                 len: self.inner.len,
                 next_open_slot: self.inner.next_open_slot,
             },
-            _phantom_k: Default::default(),
-            _phantom_p: Default::default(),
+            _phantom: Default::default(),
         }
     }
 }
@@ -954,7 +951,7 @@ where
 {
     inner: I,
 
-    phantom_t: PhantomData<T>,
+    phantom: PhantomData<T>,
 }
 
 impl<'a, I, T> Iterator for Drain<'a, I, T>
