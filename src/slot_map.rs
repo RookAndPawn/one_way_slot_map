@@ -341,32 +341,6 @@ where
     _phantom: PhantomData<fn(P, K)>,
 }
 
-/// This is here because using *const K/P in the phantom data prevent the slot
-/// map type from being automatically marked as send and sync. Using K and P
-/// directly in the phantom data would solve this problem, but according to the
-/// rust book, you can save some drop check logic (whatever that is) if you use
-/// const pointers in your phantom data
-unsafe impl<K, P, T> Send for SlotMap<K, P, T>
-where
-    K: Sync + SlotMapKey<P>,
-    P: Sync,
-    T: Sync,
-{
-}
-
-/// This is here because using *const K/P in the phantom data prevent the slot
-/// map type from being automatically marked as send and sync. Using K and P
-/// directly in the phantom data would solve this problem, but according to the
-/// rust book, you can save some drop check logic (whatever that is) if you use
-/// const pointers in your phantom data
-unsafe impl<K, P, T> Sync for SlotMap<K, P, T>
-where
-    K: Sync + SlotMapKey<P>,
-    P: Sync,
-    T: Sync,
-{
-}
-
 impl<K, P, T> std::fmt::Debug for SlotMap<K, P, T>
 where
     T: std::fmt::Debug,
