@@ -694,20 +694,17 @@ where
     /// assert_eq!(None, map.get(&key));
     /// ```
     pub fn remove_raw(&mut self, key_data: &SlotMapKeyData) -> Option<&mut T> {
-        if let Some((key, value)) = self
-            .inner
+        self.inner
             .slots
             .get_existing_slot_mut(key_data)
             .filter(|(key, _)| key.is_filled())
             .filter(|(key, _)| key.generation == key_data.generation)
-        {
-            self.inner.len -= 1;
-            key.increment_generation();
-            key.swap_coordinates(&mut self.inner.next_open_slot);
-            Some(value)
-        } else {
-            None
-        }
+            .map(|(key, value)| {
+                self.inner.len -= 1;
+                key.increment_generation();
+                key.swap_coordinates(&mut self.inner.next_open_slot);
+                value
+            })
     }
 
     /// Check to see if the given key is still valid in this map

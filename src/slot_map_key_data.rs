@@ -1,4 +1,4 @@
-use std::convert::From;
+use std::{convert::From, mem::swap};
 
 use super::SLOT_MAP_CHUNK_SIZE;
 
@@ -50,13 +50,8 @@ impl SlotMapKeyData {
 
     /// Swap the chunk index and index in chunk fields between self and other
     pub(crate) fn swap_coordinates(&mut self, other: &mut Self) {
-        let swap_chunk_index = self.chunk_index;
-        self.chunk_index = other.chunk_index;
-        other.chunk_index = swap_chunk_index;
-
-        let swap_index_in_chunk = self.index_in_chunk;
-        self.index_in_chunk = other.index_in_chunk;
-        other.index_in_chunk = swap_index_in_chunk;
+        swap(&mut self.index_in_chunk, &mut other.index_in_chunk);
+        swap(&mut self.chunk_index, &mut other.chunk_index);
     }
 
     /// Increment the coordinates of this slot map key data. It the index in
